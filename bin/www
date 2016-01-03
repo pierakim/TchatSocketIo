@@ -1,0 +1,275 @@
+#!/usr/bin/env node
+
+/**
+ * Module dependencies.
+ */
+
+var app = require('../app');
+var debug = require('debug')('TchatSocketIo_Final:server');
+var http = require('http');
+
+/**
+ * Get port from environment and store in Express.
+ */
+
+var port = normalizePort(process.env.PORT || '3000');
+app.set('port', port);
+
+/**
+ * Create HTTP server.
+ */
+
+var server = http.createServer(app);
+
+/**
+ * Listen on provided port, on all network interfaces.
+ */
+
+server.listen(port);
+server.on('error', onError);
+server.on('listening', onListening);
+
+
+
+/**
+ * Gestion de la date pour la Log
+ */
+
+transform = function(nbre){
+  var res = nbre;
+  if(nbre<10) {
+    res = '0'+nbre;
+  }
+  return res;
+}
+
+
+getDateLog = function() {
+  var date = new Date();
+  var month = (date.getMonth()+1);
+  var day = transform(date.getDate());
+  var hour = transform(date.getHours());
+  var minute = transform(date.getMinutes());
+  var seconde = transform(date.getSeconds());
+
+  var res = date.getFullYear() + '-' + month + '-' + day + ' ' + hour + ':' + minute + ':' + seconde;
+  return res;
+};
+
+
+/**
+ * Variables globales coté serveur
+ *  - gestion utilisateur
+ *  - historique des messages
+ *  - utilisateur en train d'écrire
+ */
+
+var users=[];
+var messages = [];
+var typingUsers = [];
+
+/**
+ * Chaussette.Io Chaussette.Io Chaussette.Io Chaussette.Io
+ */
+var io = require('socket.io').listen(server);
+io.on('connection', function(socket){
+
+  /**
+   * Evenement "chat-message"
+   * Mise en place de l'historique
+   * Emission d'un événement "chat-message" pour chaque message de l'historique
+   */
+  for (i = 0; i < messages.length; i++) {
+    if (messages[i].username !== undefined) {
+      socket.emit('chat-message', messages[i]);
+    } else {
+      socket.emit('service-message', messages[i]);
+    }
+  }
+
+  /**
+   * Emission d'un événement "user-login" pour chaque utilisateur connecté
+   * On récupère l'ensemble des personnes connectées
+   */
+  for (i = 0; i < users.length; i++) {
+    socket.emit('user-login', users[i]);
+  }
+
+  //variable temp pour la gestion d'un utilisateur
+  var user;
+
+  /**
+   * Gestion du login utilisateur
+   * Emission de la part du client après que l'utilisateur ait entré son userName.
+   * Reception ici
+   */
+  socket.on('user-login', function (loggedUser, callback) {
+    // Vérification que l'utilisateur n'existe pas
+    var userIndex = -1;
+    for (i = 0; i < users.length; i++) {
+      if (users[i].username === loggedUser.username) {
+        userIndex = i;
+      }
+    }
+    //si l'utilisateur n'existe pas :
+    if (loggedUser !== undefined && userIndex === -1) {
+      user = loggedUser;
+      users.push(user); //rajout d'un nouvel utilisateurs
+      // creation de l'objet - Envoi des messages de service
+      var userServiceMessage = {
+        text: 'You logged in as "' + loggedUser.username + '"',
+        type: 'login'
+      };
+      var broadcastedServiceMessage = {
+        text: 'User "' + loggedUser.username + '" logged in',
+        type: 'login'
+      };
+      //Me signaler mon arrivée dans le tchat
+      socket.emit('service-message', userServiceMessage);
+      //Signaler aux autres mon arrivée
+      socket.broadcast.emit('service-message', broadcastedServiceMessage); //prevenir les autres de mon arrivée
+      //les broadcastedServiceMessage sont enregistrés pour historique
+      messages.push(broadcastedServiceMessage);
+      // Emission de 'user-login' et appel du callback
+      io.emit('user-login', loggedUser);
+      //on renvoie le callback = true car function (loggedUser, callback)
+      //On valide donc que l'utilisateur n'est pas déja dans le tchat
+      callback(true);
+    }
+    else {
+      callback(false);
+    }
+  });
+
+  /**
+   * Envoyer un message à partir du client
+   */
+  socket.on('chat-message', function (message) {
+    message.username = user.username; // On intègre ici le nom d'utilisateur au message
+    message.dateLog = getDateLog();
+    io.emit('chat-message', message);
+    //gestion historique des messages
+    messages.push(message);
+    if (messages.length > 150) {
+      messages.splice(0, 1);
+    }
+    console.log(getDateLog()+' Message send by : ' + user.username);
+  });
+
+  /**
+   * Deconnection de l'utilisateur
+   */
+  socket.on('disconnect', function(){
+    if (user !== undefined)
+    {
+      //si l'utilisateur est en train de taper puis de deconnecte
+      //le supprimer du tableau de gestion des personnes en train d'écrire.
+      var typingUserIndex = typingUsers.indexOf(user);
+      if (typingUserIndex !== -1) {
+        typingUsers.splice(typingUserIndex, 1);
+      }
+
+      // Broadcast d'un 'service-message'
+      var serviceMessage = {
+        text: 'User "' + user.username + '" disconnected',
+        type: 'logout'
+      };
+      socket.broadcast.emit('service-message', serviceMessage);
+      // Suppression de la liste des connectés
+      var userIndex = users.indexOf(user);
+      if (userIndex !== -1) {
+        users.splice(userIndex, 1);
+      }
+      //les serviceMessages sont enregistrés
+      messages.push(serviceMessage);
+      io.emit('user-logout', user);
+    }
+  });
+
+  /**
+   * Réception de l'événement 'start-typing'
+   * L'utilisateur commence à saisir son message
+   */
+  socket.on('start-typing', function () {
+    // Ajout du user à la liste des utilisateurs en cours de saisie
+    if (typingUsers.indexOf(user) === -1) {
+      typingUsers.push(user);
+    }
+    io.emit('update-typing', typingUsers);
+  });
+
+  /**
+   * Réception de l'événement 'stop-typing'
+   * L'utilisateur a arrêter de saisir son message
+   */
+  socket.on('stop-typing', function () {
+    var typingUserIndex = typingUsers.indexOf(user);
+    if (typingUserIndex !== -1) {
+      typingUsers.splice(typingUserIndex, 1);
+    }
+    io.emit('update-typing', typingUsers);
+  });
+
+});
+
+
+
+/**
+ * Normalize a port into a number, string, or false.
+ */
+
+function normalizePort(val) {
+  var port = parseInt(val, 10);
+
+  if (isNaN(port)) {
+    // named pipe
+    return val;
+  }
+
+  if (port >= 0) {
+    // port number
+    return port;
+  }
+
+  return false;
+}
+
+/**
+ * Event listener for HTTP server "error" event.
+ */
+
+function onError(error) {
+  if (error.syscall !== 'listen') {
+    throw error;
+  }
+
+  var bind = typeof port === 'string'
+    ? 'Pipe ' + port
+    : 'Port ' + port;
+
+  // handle specific listen errors with friendly messages
+  switch (error.code) {
+    case 'EACCES':
+      console.error(bind + ' requires elevated privileges');
+      process.exit(1);
+      break;
+    case 'EADDRINUSE':
+      console.error(bind + ' is already in use');
+      process.exit(1);
+      break;
+    default:
+      throw error;
+  }
+}
+
+/**
+ * Event listener for HTTP server "listening" event.
+ */
+
+function onListening() {
+  var addr = server.address();
+  var bind = typeof addr === 'string'
+    ? 'pipe ' + addr
+    : 'port ' + addr.port;
+  debug('Listening on ' + bind);
+}

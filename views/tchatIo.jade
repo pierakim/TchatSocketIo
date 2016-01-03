@@ -1,0 +1,17 @@
+extends tchatIOLayout
+block content
+    section#chat
+        ul#messages
+        ul#users
+        form(action='')
+            input#m(autocomplete='off')
+            button Send
+    section#login
+        form(action='')
+            label(for='u') Username
+            input#u(autocomplete='off', autofocus='')
+            p
+                button Login
+    script(src='http://code.jquery.com/jquery-1.11.1.js')
+    script(src='/socket.io/socket.io.js')
+    script(src='/javascripts/clientTchatIO.js')
